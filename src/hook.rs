@@ -7,7 +7,7 @@
 
 use std::fs;
 use std::io::Write;
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -40,18 +40,42 @@ impl HookHarness {
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("/tmp"));
         let pid = std::process::id();
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.subsec_nanos())
-            .unwrap_or(0);
-        let tmp_dir = root.join(format!("claude-p-{pid}-{nanos:x}"));
-        fs::create_dir_all(&tmp_dir)?;
+        // Create an exclusive, private (0700) temp dir. `create_dir` (not
+        // create_dir_all) fails on a pre-existing path or symlink, so another
+        // user can't pre-seed our hook/FIFO location in a shared TMPDIR. Retry
+        // with fresh entropy on the rare collision.
+        let tmp_dir = {
+            let mut builder = fs::DirBuilder::new();
+            builder.mode(0o700);
+            let mut chosen: Option<PathBuf> = None;
+            for attempt in 0..128u32 {
+                let nanos = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map(|d| d.as_nanos())
+                    .unwrap_or(0);
+                let candidate = root.join(format!("claude-p-{pid}-{nanos:x}-{attempt}"));
+                match builder.create(&candidate) {
+                    Ok(()) => {
+                        chosen = Some(candidate);
+                        break;
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                    Err(e) => return Err(e),
+                }
+            }
+            chosen.ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::AlreadyExists,
+                    "could not create a unique temp dir",
+                )
+            })?
+        };
 
         let fifo_path = tmp_dir.join("events.fifo");
         let script_path = tmp_dir.join("hook.sh");
 
         unistd::mkfifo(&fifo_path, Mode::from_bits_truncate(0o600))
-            .map_err(|e| std::io::Error::other(format!("mkfifo: {e}")))?;
+            .map_err(|e| std::io::Error::from_raw_os_error(e as i32))?;
 
         let mut script = fs::File::create(&script_path)?;
         script.write_all(SCRIPT_BODY.as_bytes())?;
@@ -88,7 +112,7 @@ fn build_settings_json(script_path: &str) -> String {
             "matcher": "*",
             "hooks": [{
                 "type": "command",
-                "command": format!("{script_path} {name}"),
+                "command": format!("{} {}", shell_single_quote(script_path), name),
             }],
         }])
     };
@@ -99,6 +123,24 @@ fn build_settings_json(script_path: &str) -> String {
         }
     })
     .to_string()
+}
+
+/// Single-quote a path for safe interpolation into the hook command string
+/// that claude runs through the shell, so a temp path containing a space or
+/// shell metacharacter can't break or alter the command. Handles embedded
+/// single quotes via the `'\''` idiom.
+fn shell_single_quote(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('\'');
+    for c in s.chars() {
+        if c == '\'' {
+            out.push_str("'\\''");
+        } else {
+            out.push(c);
+        }
+    }
+    out.push('\'');
+    out
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -220,5 +262,20 @@ mod tests {
         let dir = h.tmp_dir.clone();
         drop(h);
         assert!(!dir.exists());
+    }
+
+    #[test]
+    fn shell_quote_wraps_and_escapes() {
+        assert_eq!(shell_single_quote("/tmp/a b/hook.sh"), "'/tmp/a b/hook.sh'");
+        assert_eq!(shell_single_quote("a'b"), "'a'\\''b'");
+    }
+
+    #[test]
+    fn settings_command_is_shell_quoted() {
+        let json = build_settings_json("/tmp/a b/hook.sh");
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let cmd = v["hooks"]["Stop"][0]["hooks"][0]["command"].as_str().unwrap();
+        assert!(cmd.starts_with("'/tmp/a b/hook.sh'"));
+        assert!(cmd.ends_with(" Stop"));
     }
 }
