@@ -32,6 +32,9 @@ use crate::transcript::{self, Summary, Usage};
 
 const RECENT_CAP: usize = 8192;
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
+/// Upper bound on un-newline-terminated FIFO bytes we'll buffer. Hook lines are
+/// short single-line JSON; anything past this is malformed and gets dropped.
+const MAX_LINE_BUF: usize = 1 << 20;
 /// Stop can fire a few ms before claude flushes the assistant line to the
 /// transcript JSONL. Retry window for transcript-derived summaries.
 const TRANSCRIPT_RETRIES: u32 = 40;
@@ -187,12 +190,6 @@ pub fn run(opts: &Options, mut stream_out: Option<&mut dyn Write>) -> Result<Run
                 DriverError::SessionStartTimeout
             });
         }
-        if shared.exited.load(Ordering::SeqCst) && stop_payload.is_none() {
-            let tail = shared.tail.lock().map(|t| strip_csi(&t)).unwrap_or_default();
-            teardown(&mut child, master, pump);
-            return Err(DriverError::ChildExitedEarly(tail));
-        }
-
         match (&fifo).read(&mut read_buf) {
             Ok(0) => {}
             Ok(n) => line_buf.extend_from_slice(&read_buf[..n]),
@@ -236,27 +233,52 @@ pub fn run(opts: &Options, mut stream_out: Option<&mut dyn Write>) -> Result<Run
             }
         }
 
-        // Live-tail the transcript while the turn is in progress.
-        if streaming {
-            pump_tailer(&mut tailer, &transcript_path, reborrow(&mut stream_out));
+        // Guard against unbounded growth if a relay ever writes data without a
+        // newline terminator. Hook lines are short single-line JSON.
+        if line_buf.len() > MAX_LINE_BUF {
+            if opts.debug {
+                eprintln!(
+                    "[claude-p] dropping {} bytes of unterminated FIFO data",
+                    line_buf.len()
+                );
+            }
+            line_buf.clear();
         }
+
+        // Live-tail the transcript while the turn is in progress.
+        if streaming
+            && let Err(e) = pump_tailer(&mut tailer, &transcript_path, reborrow(&mut stream_out)) {
+                teardown(&mut child, master, pump);
+                return Err(DriverError::Io(e));
+            }
 
         if let Some(payload) = stop_payload.take() {
             break payload;
         }
+
+        // Checked only after draining + processing the FIFO this iteration, so a
+        // child that writes Stop and exits in the same poll window still has its
+        // answer recovered instead of being reported as exited-early.
+        if shared.exited.load(Ordering::SeqCst) {
+            let tail = shared.tail.lock().map(|t| strip_csi(&t)).unwrap_or_default();
+            teardown(&mut child, master, pump);
+            return Err(DriverError::ChildExitedEarly(tail));
+        }
+
         thread::sleep(POLL_INTERVAL);
     };
 
     // The final assistant line is often flushed just after Stop; keep draining.
     if streaming {
         for _ in 0..POST_STOP_DRAIN_ROUNDS {
-            pump_tailer(&mut tailer, &transcript_path, reborrow(&mut stream_out));
+            // Best-effort final flush; we already have the answer.
+            let _ = pump_tailer(&mut tailer, &transcript_path, reborrow(&mut stream_out));
             thread::sleep(POST_STOP_DRAIN_DELAY);
         }
     }
 
     let fields = hook::extract_fields(&stop_payload);
-    let summary = summarize(opts, &fields);
+    let summary = summarize(opts, &fields, transcript_path.as_deref());
 
     // We have the answer; tear the child down immediately.
     teardown(&mut child, master, pump);
@@ -265,13 +287,12 @@ pub fn run(opts: &Options, mut stream_out: Option<&mut dyn Write>) -> Result<Run
     let duration_ms = start.elapsed().as_millis() as u64;
 
     let mut streamed = false;
-    if streaming {
-        if let Some(w) = reborrow(&mut stream_out) {
+    if streaming
+        && let Some(w) = reborrow(&mut stream_out) {
             crate::emit::emit_json(w, &summary, duration_ms).map_err(DriverError::Io)?;
             let _ = w.flush();
             streamed = true;
         }
-    }
 
     Ok(RunOutcome {
         summary,
@@ -282,7 +303,7 @@ pub fn run(opts: &Options, mut stream_out: Option<&mut dyn Write>) -> Result<Run
 
 /// Short-lived reborrow of an `Option<&mut dyn Write>` so it can be passed
 /// repeatedly without the borrow outliving each call.
-fn reborrow<'a, 'b>(o: &'a mut Option<&'b mut dyn Write>) -> Option<&'a mut dyn Write> {
+fn reborrow<'a>(o: &'a mut Option<&mut dyn Write>) -> Option<&'a mut dyn Write> {
     o.as_mut().map(|w| &mut **w as &mut dyn Write)
 }
 
@@ -290,20 +311,24 @@ fn pump_tailer(
     tailer: &mut Option<Tailer>,
     transcript_path: &Option<String>,
     out: Option<&mut dyn Write>,
-) {
-    let Some(w) = out else { return };
-    if tailer.is_none() {
-        if let Some(tp) = transcript_path {
-            *tailer = Tailer::open(Path::new(tp)).ok();
-        }
-    }
-    if let Some(t) = tailer.as_mut() {
-        if let Ok(n) = t.pump(w) {
-            if n > 0 {
-                let _ = w.flush();
+) -> std::io::Result<()> {
+    let Some(w) = out else { return Ok(()) };
+    if tailer.is_none()
+        && let Some(tp) = transcript_path {
+            match Tailer::open(Path::new(tp)) {
+                Ok(t) => *tailer = Some(t),
+                // The transcript file may not exist yet; expected, retry later.
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+                Err(e) => return Err(e),
             }
         }
+    if let Some(t) = tailer.as_mut() {
+        let n = t.pump(w)?;
+        if n > 0 {
+            w.flush()?;
+        }
     }
+    Ok(())
 }
 
 fn teardown(
@@ -327,38 +352,51 @@ fn kill_child_group(child: &mut Box<dyn Child + Send + Sync>) {
     if let Some(pgid) = pgid {
         let _ = signal::killpg(pgid, Signal::SIGTERM);
     }
+    let mut reaped = false;
     for _ in 0..15 {
-        match child.try_wait() {
-            Ok(Some(_)) => break,
-            _ => thread::sleep(Duration::from_millis(20)),
+        if let Ok(Some(_)) = child.try_wait() {
+            reaped = true;
+            break;
         }
+        thread::sleep(Duration::from_millis(20));
     }
-    if let Some(pgid) = pgid {
-        let _ = signal::killpg(pgid, Signal::SIGKILL);
+    // Only escalate to SIGKILL while the child is still alive. Sending it after
+    // the child has been reaped risks signalling an unrelated process group
+    // that reused the pid/pgid.
+    if !reaped {
+        if let Some(pgid) = pgid {
+            let _ = signal::killpg(pgid, Signal::SIGKILL);
+        }
+        let _ = child.kill();
+        let _ = child.wait();
     }
-    let _ = child.kill();
-    let _ = child.wait();
 }
 
 /// Derive a Summary. For text output we prefer the Stop payload's
 /// `last_assistant_message` (present in recent claude versions) so we never
 /// wait on the transcript flush. json/stream-json need the transcript for
 /// usage and cost, so we retry briefly there, falling back to the payload.
-fn summarize(opts: &Options, fields: &PayloadFields) -> Result<Summary, DriverError> {
-    if opts.output_format == OutputFormat::Text {
-        if let Some(msg) = &fields.last_assistant_message {
+fn summarize(
+    opts: &Options,
+    fields: &PayloadFields,
+    fallback_transcript: Option<&str>,
+) -> Result<Summary, DriverError> {
+    if opts.output_format == OutputFormat::Text
+        && let Some(msg) = &fields.last_assistant_message {
             return Ok(payload_only_summary(msg, fields));
         }
-    }
 
-    if let Some(tp) = &fields.transcript_path {
+    // Prefer the Stop payload's transcript_path, but fall back to the one we
+    // captured at SessionStart so json/stream-json still get usage/cost even if
+    // a given Stop payload omits the field.
+    let transcript = fields.transcript_path.as_deref().or(fallback_transcript);
+    if let Some(tp) = transcript {
         let path = Path::new(tp);
         for _ in 0..TRANSCRIPT_RETRIES {
-            if let Ok(Ok(s)) = transcript::parse_file(path) {
-                if !s.final_text.is_empty() || s.is_error {
+            if let Ok(Ok(s)) = transcript::parse_file(path)
+                && (!s.final_text.is_empty() || s.is_error) {
                     return Ok(s);
                 }
-            }
             thread::sleep(TRANSCRIPT_RETRY_DELAY);
         }
     }
@@ -394,7 +432,9 @@ fn build_argv(opts: &Options, settings_json: &str) -> Vec<String> {
         v.push("--dangerously-skip-permissions".to_string());
     }
     v.extend(opts.extra_args.iter().cloned());
-    // Positional prompt MUST come last so it isn't consumed as a flag value.
+    // `--` terminates option parsing so a prompt beginning with `-` is taken as
+    // the positional prompt, not a flag. The prompt MUST come last.
+    v.push("--".to_string());
     v.push(opts.prompt.clone());
     v
 }
