@@ -74,6 +74,31 @@ impl std::fmt::Display for ArgError {
     }
 }
 
+/// Claude long-options that take a value. We forward these (with their value)
+/// verbatim so the value isn't absorbed into the prompt.
+const KNOWN_VALUE_FLAGS: &[&str] = &[
+    "--allowedTools",
+    "--allowed-tools",
+    "--disallowedTools",
+    "--disallowed-tools",
+    "--system-prompt",
+    "--system-prompt-file",
+    "--append-system-prompt",
+    "--append-system-prompt-file",
+    "--permission-mode",
+    "--permission-prompt-tool",
+    "--fallback-model",
+    "--setting-sources",
+    "--add-dir",
+    "--mcp-config",
+    "--max-turns",
+    "--resume",
+    "--session-id",
+    "--agent",
+    "--agents",
+    "--input-format",
+];
+
 /// Parse argv (excluding argv[0]). Positional tokens become the prompt.
 pub fn parse(args: &[String]) -> Result<Options, ArgError> {
     let mut opts = Options::default();
@@ -88,39 +113,58 @@ pub fn parse(args: &[String]) -> Result<Options, ArgError> {
             i += 1;
             continue;
         }
-        match a.as_str() {
-            "--" => end_of_options = true,
+        if a == "--" {
+            end_of_options = true;
+            i += 1;
+            continue;
+        }
+
+        // Support the `--flag=value` form for long options.
+        let (flag, inline): (&str, Option<&str>) = if a.starts_with("--") {
+            match a.split_once('=') {
+                Some((f, v)) => (f, Some(v)),
+                None => (a.as_str(), None),
+            }
+        } else {
+            (a.as_str(), None)
+        };
+
+        match flag {
             "-p" | "--print" => return Err(ArgError::PrintModeRejected),
             "--settings" => return Err(ArgError::SettingsRejected),
             "--dangerously-skip-permissions" => opts.skip_permissions = true,
             "--debug" | "-d" => opts.debug = true,
             "--output-format" => {
-                opts.output_format = parse_output_format(take_value(args, &mut i, a)?)?;
+                opts.output_format = parse_output_format(value(inline, args, &mut i, flag)?)?;
             }
-            "--model" => opts.model = Some(take_value(args, &mut i, a)?.to_string()),
-            "--cwd" => opts.cwd = Some(take_value(args, &mut i, a)?.to_string()),
+            "--model" => opts.model = Some(value(inline, args, &mut i, flag)?.to_string()),
+            "--cwd" => opts.cwd = Some(value(inline, args, &mut i, flag)?.to_string()),
             "--timeout" => {
-                let secs: u64 = take_value(args, &mut i, a)?
-                    .parse()
-                    .map_err(|_| ArgError::BadNumber(args[i].clone()))?;
+                let v = value(inline, args, &mut i, flag)?;
+                let secs: u64 = v.parse().map_err(|_| ArgError::BadNumber(v.to_string()))?;
                 opts.timeout_ms = secs.saturating_mul(1000);
             }
             "--cols" => {
-                opts.cols = take_value(args, &mut i, a)?
-                    .parse()
-                    .map_err(|_| ArgError::BadNumber(args[i].clone()))?;
+                let v = value(inline, args, &mut i, flag)?;
+                opts.cols = v.parse().map_err(|_| ArgError::BadNumber(v.to_string()))?;
             }
             "--rows" => {
-                opts.rows = take_value(args, &mut i, a)?
-                    .parse()
-                    .map_err(|_| ArgError::BadNumber(args[i].clone()))?;
+                let v = value(inline, args, &mut i, flag)?;
+                opts.rows = v.parse().map_err(|_| ArgError::BadNumber(v.to_string()))?;
+            }
+            f if KNOWN_VALUE_FLAGS.contains(&f) => {
+                // Forward a recognized claude value-flag together with its value
+                // so the value isn't swallowed into the prompt.
+                let v = value(inline, args, &mut i, flag)?.to_string();
+                opts.extra_args.push(f.to_string());
+                opts.extra_args.push(v);
             }
             other if other.starts_with('-') => {
-                // Unknown flag: forward verbatim. We can't know its arity, so
-                // we forward only the flag token; flags-with-values should be
-                // passed as `--flag=value` to survive, or after `--` for the
-                // prompt. (Spike limitation; documented.)
-                opts.extra_args.push(other.to_string());
+                // Unknown flag: forward the original token verbatim (covers
+                // boolean flags and `--flag=value`). A *space-separated* value
+                // for an unrecognized flag can't be detected and would be taken
+                // as the prompt -- pass such flags as `--flag=value`.
+                opts.extra_args.push(a.clone());
             }
             _ => prompt_parts.push(a.clone()),
         }
@@ -137,6 +181,20 @@ fn parse_output_format(v: &str) -> Result<OutputFormat, ArgError> {
         "json" => Ok(OutputFormat::Json),
         "stream-json" => Ok(OutputFormat::StreamJson),
         other => Err(ArgError::BadOutputFormat(other.to_string())),
+    }
+}
+
+/// Resolve a flag's value: the inline `--flag=value` form if present, else the
+/// next argv token.
+fn value<'a>(
+    inline: Option<&'a str>,
+    args: &'a [String],
+    i: &mut usize,
+    flag: &str,
+) -> Result<&'a str, ArgError> {
+    match inline {
+        Some(v) => Ok(v),
+        None => take_value(args, i, flag),
     }
 }
 
@@ -218,5 +276,41 @@ mod tests {
             parse(&v(&["--output-format", "yaml", "hi"])),
             Err(ArgError::BadOutputFormat(_))
         ));
+    }
+
+    #[test]
+    fn inline_value_form() {
+        let o = parse(&v(&["--output-format=json", "--model=opus", "hi"])).unwrap();
+        assert_eq!(o.output_format, OutputFormat::Json);
+        assert_eq!(o.model.as_deref(), Some("opus"));
+        assert_eq!(o.prompt, "hi");
+    }
+
+    #[test]
+    fn known_value_flag_forwarded_with_value() {
+        let o = parse(&v(&["--allowedTools", "Bash(git *)", "hi"])).unwrap();
+        let idx = o
+            .extra_args
+            .iter()
+            .position(|s| s == "--allowedTools")
+            .unwrap();
+        assert_eq!(o.extra_args[idx + 1], "Bash(git *)");
+        // The value did not leak into the prompt.
+        assert_eq!(o.prompt, "hi");
+    }
+
+    #[test]
+    fn known_value_flag_inline() {
+        let o = parse(&v(&["--resume=abc123", "hi"])).unwrap();
+        assert!(o.extra_args.windows(2).any(|w| w == ["--resume", "abc123"]));
+        assert_eq!(o.prompt, "hi");
+    }
+
+    #[test]
+    fn settings_inline_form_rejected() {
+        assert_eq!(
+            parse(&v(&["--settings={}", "hi"])),
+            Err(ArgError::SettingsRejected)
+        );
     }
 }
