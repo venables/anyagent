@@ -2,9 +2,9 @@
 //! `claude` TUI under a PTY and captures the final assistant message via a
 //! Stop hook. Output on stdout matches `claude -p` for the same prompt.
 
+mod adapters;
 mod args;
 mod dec;
-mod driver;
 mod emit;
 mod harness;
 mod hook;
@@ -30,18 +30,22 @@ fn main() -> ExitCode {
         }
     };
 
-    // Only the Claude protocol is implemented today. Reserved harness names
-    // (codex, gemini, ...) fail fast rather than silently behaving like claude.
-    if !opts.harness.is_supported() {
-        eprintln!(
-            "anyagent: the '{}' harness is recognised but not implemented yet \
-             (today: claude, or a path to a claude-compatible binary). \
-             Recognised names: {}.",
-            opts.harness.name(),
-            harness::KNOWN_NAMES.join(", ")
-        );
-        return ExitCode::from(2);
-    }
+    // Resolve the adapter that drives the selected harness. Reserved
+    // harness names (codex, gemini, ...) have no adapter yet, so they fail
+    // fast rather than silently behaving like claude.
+    let adapter = match adapters::for_harness(&opts.harness) {
+        Some(a) => a,
+        None => {
+            eprintln!(
+                "anyagent: the '{}' harness is recognised but not implemented yet \
+                 (today: claude, or a path to a claude-compatible binary). \
+                 Recognised names: {}.",
+                opts.harness.name(),
+                harness::KNOWN_NAMES.join(", ")
+            );
+            return ExitCode::from(2);
+        }
+    };
 
     // No positional prompt: read it from stdin (so multiline prompts and pipes
     // work without shell escaping).
@@ -74,7 +78,7 @@ fn main() -> ExitCode {
         None
     };
 
-    match driver::run(&opts, stream_arg) {
+    match adapter.run(&opts, stream_arg) {
         Ok(outcome) => {
             if !outcome.streamed {
                 let res = match opts.output_format {

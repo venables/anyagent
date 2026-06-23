@@ -6,7 +6,7 @@
 //! capturing the final assistant message. The other names below are recognised
 //! and reserved so the `--harness` surface is stable as backends are added;
 //! selecting one that isn't wired up yet fails fast with a clear message
-//! (see `is_supported`).
+//! (see [`crate::adapters::for_harness`]).
 //!
 //! A value that is not a known name is treated as a path/binary and driven with
 //! the Claude protocol, so a fork or wrapper of `claude` can be pointed at
@@ -66,11 +66,6 @@ impl Harness {
         }
     }
 
-    /// Whether anyagent can drive this harness today. Only the Claude protocol
-    /// is implemented; a custom binary is assumed claude-compatible.
-    pub fn is_supported(&self) -> bool {
-        matches!(self, Self::Claude | Self::Custom(_))
-    }
 }
 
 #[cfg(test)]
@@ -97,16 +92,6 @@ mod tests {
             Harness::parse("/opt/bin/My-Claude"),
             Harness::Custom("/opt/bin/My-Claude".to_string())
         );
-    }
-
-    #[test]
-    fn only_claude_and_custom_supported_today() {
-        assert!(Harness::Claude.is_supported());
-        assert!(Harness::Custom("./claude".into()).is_supported());
-        assert!(!Harness::Codex.is_supported());
-        assert!(!Harness::Opencode.is_supported());
-        assert!(!Harness::Gemini.is_supported());
-        assert!(!Harness::Pi.is_supported());
     }
 
     #[test]

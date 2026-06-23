@@ -44,19 +44,26 @@ argv -> hook harness (FIFO + relay script + --settings)
 
 ### Modules (`src/`)
 
-| File            | Responsibility                                                            |
-| --------------- | ------------------------------------------------------------------------- |
-| `main.rs`       | CLI entry; stdin prompt; format dispatch; exit codes.                     |
-| `args.rs`       | Argparse; rejects `--settings`; forwards unknown flags.                   |
-| `harness.rs`    | `--harness` selection; known names + custom path; supported check.        |
-| `dec.rs`        | Stateful DEC/XTerm query responder (carry buffer across reads).           |
-| `hook.rs`       | Temp dir + FIFO + relay script + inline `--settings` JSON; payload parse. |
-| `pty.rs`        | PTY spawn (execs argv directly — no `sh -c`).                             |
-| `driver.rs`     | Orchestration: pump thread, FIFO poll, streaming, teardown.               |
-| `stream.rs`     | `read_at`-based transcript tailer (holds back torn lines).                |
-| `transcript.rs` | Session JSONL parser → final text + usage + flags.                        |
-| `emit.rs`       | text / json / stream-json formatters.                                     |
-| `signals.rs`    | SIGINT/SIGTERM → flag; lets the loop tear down and exit 130.              |
+| File                 | Responsibility                                                              |
+| -------------------- | --------------------------------------------------------------------------- |
+| `main.rs`            | CLI entry; stdin prompt; adapter dispatch; format dispatch; exit codes.     |
+| `args.rs`            | Argparse; rejects `--settings`; forwards unknown flags.                     |
+| `harness.rs`         | `--harness` selection; known names + custom path.                           |
+| `adapters/mod.rs`    | `Adapter` trait; `for_harness` dispatch; shared `RunOutcome`/`DriverError`. |
+| `adapters/claude.rs` | Claude protocol: pump thread, FIFO poll, streaming, teardown.               |
+| `dec.rs`             | Stateful DEC/XTerm query responder (carry buffer across reads).             |
+| `hook.rs`            | Temp dir + FIFO + relay script + inline `--settings` JSON; payload parse.   |
+| `pty.rs`             | PTY spawn (execs argv directly — no `sh -c`).                               |
+| `stream.rs`          | `read_at`-based transcript tailer (holds back torn lines).                  |
+| `transcript.rs`      | Session JSONL parser → final text + usage + flags.                          |
+| `emit.rs`            | text / json / stream-json formatters.                                       |
+| `signals.rs`         | SIGINT/SIGTERM → flag; lets the loop tear down and exit 130.                |
+
+Adapters live in `src/adapters/`: each backend agent CLI implements the
+`Adapter` trait in its own module, so adding a harness is "drop a file in
+`adapters/` and wire it into `for_harness`". The Claude protocol (PTY + Stop
+hook) is one such adapter; harnesses with a real non-interactive mode (codex,
+opencode) will be plain subprocess adapters with no PTY/hook machinery.
 
 ### 2.1 Concurrency
 
@@ -98,10 +105,11 @@ skip-permissions` does not suppress this dialog.)
 
 ## 4. Public surface
 
-`driver::run(opts, stream_out) -> Result<RunOutcome, DriverError>`. CLI flags
-map onto `Options` (see `args.rs`). `-H`/`--harness` chooses the backend (only
-the `claude` protocol is implemented today; a custom path is driven as a
-claude-compatible binary). `ANYAGENT_CLAUDE_BIN` overrides the `claude` binary.
+`Adapter::run(opts, stream_out) -> Result<RunOutcome, DriverError>`, dispatched
+via `adapters::for_harness`. CLI flags map onto `Options` (see `args.rs`).
+`-H`/`--harness` chooses the backend (only the `claude` protocol is implemented
+today; a custom path is driven as a claude-compatible binary).
+`ANYAGENT_CLAUDE_BIN` overrides the `claude` binary.
 
 ## 5. Test plan
 

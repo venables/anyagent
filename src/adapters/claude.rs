@@ -1,6 +1,7 @@
-//! End-to-end driver. Spawn `claude` under a PTY with the prompt passed as a
-//! positional argument (interactive mode auto-submits it), answer Ink's
-//! startup terminal probes on a pump thread, and wait for the Stop hook.
+//! Claude adapter: drive the interactive `claude` TUI under a PTY with the
+//! prompt passed as a positional argument (interactive mode auto-submits it),
+//! answer Ink's startup terminal probes on a pump thread, and wait for the Stop
+//! hook.
 //!
 //! This is deliberately free of the input-timing machinery a keystroke-driven
 //! approach needs: because the prompt is a positional arg, there is no
@@ -8,6 +9,9 @@
 //! thing the pump thread writes back to the PTY is DEC-query responses and a
 //! single Enter to dismiss the workspace-trust dialog if it appears before the
 //! session starts.
+//!
+//! It also drives a [`Harness::Custom`] path: a fork or wrapper of `claude` is
+//! assumed claude-compatible and spoken to with this same protocol.
 
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
@@ -22,6 +26,7 @@ use nix::sys::signal::{self, Signal};
 use nix::unistd::Pid;
 use portable_pty::{Child, MasterPty};
 
+use crate::adapters::{Adapter, DriverError, RunOutcome};
 use crate::args::{Options, OutputFormat};
 use crate::dec::DecResponder;
 use crate::harness::Harness;
@@ -45,57 +50,18 @@ const TRANSCRIPT_RETRY_DELAY: Duration = Duration::from_millis(50);
 const POST_STOP_DRAIN_ROUNDS: u32 = 20;
 const POST_STOP_DRAIN_DELAY: Duration = Duration::from_millis(20);
 
-pub struct RunOutcome {
-    pub summary: Summary,
-    pub duration_ms: u64,
-    /// True if stream-json output was already written live to the caller's
-    /// stream writer; the caller must not re-emit.
-    pub streamed: bool,
-}
+/// Drives the `claude` CLI (and claude-compatible custom binaries).
+pub struct ClaudeAdapter;
 
-#[derive(Debug)]
-pub enum DriverError {
-    SessionStartTimeout,
-    StopTimeout,
-    ChildExitedEarly(String),
-    TranscriptUnavailable,
-    Interrupted,
-    Spawn(anyhow::Error),
-    Io(std::io::Error),
-}
-
-impl DriverError {
-    pub fn exit_code(&self) -> u8 {
-        match self {
-            Self::SessionStartTimeout | Self::StopTimeout => 124,
-            Self::TranscriptUnavailable => 1,
-            Self::Interrupted => 130,
-            Self::ChildExitedEarly(_) | Self::Spawn(_) | Self::Io(_) => 2,
-        }
+impl Adapter for ClaudeAdapter {
+    fn run(
+        &self,
+        opts: &Options,
+        stream_out: Option<&mut dyn Write>,
+    ) -> Result<RunOutcome, DriverError> {
+        run(opts, stream_out)
     }
 }
-
-impl std::fmt::Display for DriverError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::SessionStartTimeout => {
-                write!(f, "timed out waiting for claude to start (no SessionStart hook fired)")
-            }
-            Self::StopTimeout => write!(f, "timed out waiting for the assistant to finish"),
-            Self::ChildExitedEarly(tail) => {
-                write!(f, "claude exited before finishing. Last output:\n{tail}")
-            }
-            Self::TranscriptUnavailable => {
-                write!(f, "Stop fired but no assistant message was recoverable")
-            }
-            Self::Interrupted => write!(f, "interrupted"),
-            Self::Spawn(e) => write!(f, "failed to spawn the agent binary: {e}"),
-            Self::Io(e) => write!(f, "io error: {e}"),
-        }
-    }
-}
-
-impl std::error::Error for DriverError {}
 
 struct Shared {
     exited: AtomicBool,
