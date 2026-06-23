@@ -13,6 +13,7 @@
 //! `-H` / `--harness` selects which agent CLI to drive (see `crate::harness`).
 
 use crate::harness::Harness;
+use crate::policy::{Network, Perms, RequireEnforcement};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutputFormat {
@@ -28,6 +29,13 @@ pub struct Options {
     pub output_format: OutputFormat,
     pub model: Option<String>,
     pub skip_permissions: bool,
+    /// Permission tier requested by intent (`--perms`). `None` leaves the
+    /// harness at its own default and reports no enforcement.
+    pub perms: Option<Perms>,
+    /// Network tier requested by intent (`--network`).
+    pub network: Option<Network>,
+    /// Enforcement class demanded by `--require-enforcement` (exit 32 if unmet).
+    pub require_enforcement: Option<RequireEnforcement>,
     pub cwd: Option<String>,
     /// Path to write the authoritative metadata envelope to (a side channel
     /// distinct from the answer on stdout). `None` disables it.
@@ -48,6 +56,9 @@ impl Default for Options {
             output_format: OutputFormat::Text,
             model: None,
             skip_permissions: false,
+            perms: None,
+            network: None,
+            require_enforcement: None,
             cwd: None,
             meta_file: None,
             timeout_ms: 300_000,
@@ -65,6 +76,7 @@ pub enum ArgError {
     MissingValue(String),
     BadOutputFormat(String),
     BadNumber(String),
+    BadValue { flag: String, value: String, allowed: String },
 }
 
 impl std::fmt::Display for ArgError {
@@ -79,6 +91,9 @@ impl std::fmt::Display for ArgError {
                 write!(f, "invalid --output-format {v:?} (text|json|stream-json)")
             }
             Self::BadNumber(v) => write!(f, "invalid number: {v:?}"),
+            Self::BadValue { flag, value, allowed } => {
+                write!(f, "invalid {flag} {value:?} ({allowed})")
+            }
         }
     }
 }
@@ -156,6 +171,31 @@ pub fn parse(args: &[String]) -> Result<Options, ArgError> {
             "--model" => opts.model = Some(value(inline, args, &mut i, flag)?.to_string()),
             "--cwd" => opts.cwd = Some(value(inline, args, &mut i, flag)?.to_string()),
             "--meta-file" => opts.meta_file = Some(value(inline, args, &mut i, flag)?.to_string()),
+            "--perms" => {
+                let v = value(inline, args, &mut i, flag)?;
+                opts.perms = Some(Perms::parse(v).ok_or_else(|| ArgError::BadValue {
+                    flag: flag.to_string(),
+                    value: v.to_string(),
+                    allowed: "read-only|workspace-write|full".to_string(),
+                })?);
+            }
+            "--network" => {
+                let v = value(inline, args, &mut i, flag)?;
+                opts.network = Some(Network::parse(v).ok_or_else(|| ArgError::BadValue {
+                    flag: flag.to_string(),
+                    value: v.to_string(),
+                    allowed: "none|restricted|full".to_string(),
+                })?);
+            }
+            "--require-enforcement" => {
+                let v = value(inline, args, &mut i, flag)?;
+                opts.require_enforcement =
+                    Some(RequireEnforcement::parse(v).ok_or_else(|| ArgError::BadValue {
+                        flag: flag.to_string(),
+                        value: v.to_string(),
+                        allowed: "os-sandbox|any".to_string(),
+                    })?);
+            }
             "--timeout" => {
                 let v = value(inline, args, &mut i, flag)?;
                 let secs: u64 = v.parse().map_err(|_| ArgError::BadNumber(v.to_string()))?;
@@ -339,6 +379,29 @@ mod tests {
 
         let o = parse(&v(&["--meta-file=/tmp/n.json", "hi"])).unwrap();
         assert_eq!(o.meta_file.as_deref(), Some("/tmp/n.json"));
+    }
+
+    #[test]
+    fn perms_network_require_parsed() {
+        let o = parse(&v(&[
+            "--perms", "read-only",
+            "--network", "none",
+            "--require-enforcement", "os-sandbox",
+            "hi",
+        ]))
+        .unwrap();
+        assert_eq!(o.perms, Some(Perms::ReadOnly));
+        assert_eq!(o.network, Some(Network::None));
+        assert_eq!(o.require_enforcement, Some(RequireEnforcement::OsSandbox));
+        assert_eq!(o.prompt, "hi");
+    }
+
+    #[test]
+    fn bad_perms_value_rejected() {
+        assert!(matches!(
+            parse(&v(&["--perms", "yolo", "hi"])),
+            Err(ArgError::BadValue { .. })
+        ));
     }
 
     #[test]

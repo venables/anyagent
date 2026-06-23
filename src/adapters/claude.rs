@@ -30,6 +30,7 @@ use crate::adapters::{Adapter, DriverError, RunOutcome};
 use crate::args::{Options, OutputFormat};
 use crate::dec::DecResponder;
 use crate::harness::Harness;
+use crate::policy::{Enforcement, Network, Perms};
 use crate::hook::{self, HookHarness, PayloadFields};
 use crate::pty::{self, SpawnConfig};
 use crate::signals;
@@ -60,6 +61,21 @@ impl Adapter for ClaudeAdapter {
         stream_out: Option<&mut dyn Write>,
     ) -> Result<RunOutcome, DriverError> {
         run(opts, stream_out)
+    }
+
+    fn perms_enforcement(&self, perms: Perms) -> Enforcement {
+        match perms {
+            // `--permission-mode plan` keeps the agent read-only by policy, not
+            // an OS sandbox.
+            Perms::ReadOnly => Enforcement::AgentPolicy,
+            // Write tiers go through bypassPermissions: nothing constrains it.
+            Perms::WorkspaceWrite | Perms::Full => Enforcement::Unenforced,
+        }
+    }
+
+    fn network_enforcement(&self, _perms: Option<Perms>, _network: Network) -> Enforcement {
+        // claude has no native network control today.
+        Enforcement::Unenforced
     }
 }
 
@@ -402,7 +418,20 @@ fn build_argv(opts: &Options, settings_json: &str) -> Vec<String> {
         v.push("--model".to_string());
         v.push(m.clone());
     }
-    if opts.skip_permissions {
+    // Map the requested permission tier to claude's native mechanism: read-only
+    // is policy (`--permission-mode plan`); write tiers use bypassPermissions
+    // (`--dangerously-skip-permissions`). `--dangerously-skip-permissions`
+    // requested directly maps to the same bypass.
+    let bypass = opts.skip_permissions
+        || matches!(opts.perms, Some(Perms::WorkspaceWrite) | Some(Perms::Full));
+    match opts.perms {
+        Some(Perms::ReadOnly) => {
+            v.push("--permission-mode".to_string());
+            v.push("plan".to_string());
+        }
+        _ => {}
+    }
+    if bypass {
         v.push("--dangerously-skip-permissions".to_string());
     }
     v.extend(opts.extra_args.iter().cloned());

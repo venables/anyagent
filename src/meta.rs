@@ -8,6 +8,7 @@
 //! echo of the request pretending to be the resolved value.
 
 use crate::args::Options;
+use crate::policy::Enforcement;
 use crate::transcript::Summary;
 
 /// The terminal status of a run, mapped to a stable exit code and label. The
@@ -22,11 +23,10 @@ pub enum ExitStatus {
     AgentError,
     Timeout,
     HarnessNotFound,
-    // Constructed once model validation (Phase 6) and enforcement (Phase 4)
-    // land; defined now so the exit-code taxonomy is stable from the start.
+    // Constructed once model validation (Phase 6) lands; defined now so the
+    // exit-code taxonomy is stable from the start.
     #[allow(dead_code)]
     InvalidModel,
-    #[allow(dead_code)]
     EnforcementUnsupported,
     Interrupted,
     Internal,
@@ -71,6 +71,12 @@ pub struct Metadata {
     /// The model the harness actually ran, per the transcript; `"unknown"`
     /// when the harness never exposed it. Never an echo of the request.
     pub model_resolved: String,
+    /// Requested permission tier (`--perms`), or `None` (serialized `null`).
+    pub perms: Option<String>,
+    /// Enforcement class achieved for the requested perms, or `None`.
+    pub enforcement: Option<String>,
+    /// Requested network tier (`--network`), or `None`.
+    pub network: Option<String>,
     pub duration_ms: u64,
     pub exit_status: ExitStatus,
     pub session_id: String,
@@ -87,6 +93,7 @@ impl Metadata {
         summary: Option<&Summary>,
         duration_ms: u64,
         exit_status: ExitStatus,
+        enforcement: Option<Enforcement>,
     ) -> Self {
         let model_requested = opts.model.clone().unwrap_or_else(|| "default".to_string());
         let model_resolved = summary
@@ -99,6 +106,9 @@ impl Metadata {
             harness_version: None,
             model_requested,
             model_resolved,
+            perms: opts.perms.map(|p| p.label().to_string()),
+            enforcement: enforcement.map(|e| e.label().to_string()),
+            network: opts.network.map(|n| n.label().to_string()),
             duration_ms,
             exit_status,
             session_id: summary.map(|s| s.session_id.clone()).unwrap_or_default(),
@@ -114,6 +124,9 @@ impl Metadata {
             "harness_version": self.harness_version,
             "model_requested": self.model_requested,
             "model_resolved": self.model_resolved,
+            "perms": self.perms,
+            "enforcement": self.enforcement,
+            "network": self.network,
             "duration_ms": self.duration_ms,
             "exit_status": self.exit_status.label(),
             "session_id": self.session_id,
@@ -170,7 +183,7 @@ mod tests {
             model: Some("opus".into()),
             ..Options::default()
         };
-        let m = Metadata::build(&opts, Some(&summary()), 100, ExitStatus::Ok);
+        let m = Metadata::build(&opts, Some(&summary()), 100, ExitStatus::Ok, None);
         assert_eq!(m.model_requested, "opus");
         assert_eq!(m.model_resolved, "claude-opus-4-8");
         assert_eq!(m.to_json()["exit_status"], "ok");
@@ -179,20 +192,46 @@ mod tests {
 
     #[test]
     fn requested_default_when_unspecified() {
-        let m = Metadata::build(&Options::default(), Some(&summary()), 1, ExitStatus::Ok);
+        let m = Metadata::build(&Options::default(), Some(&summary()), 1, ExitStatus::Ok, None);
         assert_eq!(m.model_requested, "default");
+    }
+
+    #[test]
+    fn policy_fields_reflect_request_and_enforcement() {
+        use crate::policy::{Enforcement, Network, Perms};
+        let opts = Options {
+            perms: Some(Perms::ReadOnly),
+            network: Some(Network::None),
+            ..Options::default()
+        };
+        let m = Metadata::build(
+            &opts,
+            Some(&summary()),
+            1,
+            ExitStatus::Ok,
+            Some(Enforcement::AgentPolicy),
+        );
+        let j = m.to_json();
+        assert_eq!(j["perms"], "read-only");
+        assert_eq!(j["enforcement"], "agent-policy");
+        assert_eq!(j["network"], "none");
+
+        // Unset policy fields serialize as null.
+        let m = Metadata::build(&Options::default(), Some(&summary()), 1, ExitStatus::Ok, None);
+        assert!(m.to_json()["perms"].is_null());
+        assert!(m.to_json()["enforcement"].is_null());
     }
 
     #[test]
     fn resolved_unknown_without_summary_or_model() {
         // No summary at all (failed run).
-        let m = Metadata::build(&Options::default(), None, 1, ExitStatus::Timeout);
+        let m = Metadata::build(&Options::default(), None, 1, ExitStatus::Timeout, None);
         assert_eq!(m.model_resolved, "unknown");
 
         // Summary present but transcript never exposed the model.
         let mut s = summary();
         s.model = String::new();
-        let m = Metadata::build(&Options::default(), Some(&s), 1, ExitStatus::Ok);
+        let m = Metadata::build(&Options::default(), Some(&s), 1, ExitStatus::Ok, None);
         assert_eq!(m.model_resolved, "unknown");
     }
 }

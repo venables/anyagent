@@ -9,6 +9,7 @@ mod emit;
 mod harness;
 mod hook;
 mod meta;
+mod policy;
 mod pty;
 mod signals;
 mod stream;
@@ -56,7 +57,10 @@ fn main() -> ExitCode {
                 opts.harness.name(),
                 harness::KNOWN_NAMES.join(", ")
             );
-            write_meta_file(&opts, &Metadata::build(&opts, None, 0, ExitStatus::HarnessNotFound));
+            write_meta_file(
+                &opts,
+                &Metadata::build(&opts, None, 0, ExitStatus::HarnessNotFound, None),
+            );
             return ExitCode::from(ExitStatus::HarnessNotFound.code());
         }
     };
@@ -81,6 +85,22 @@ fn main() -> ExitCode {
         return ExitCode::from(2);
     }
 
+    // The enforcement class achieved for the requested perms tier (if any),
+    // reported in metadata and used for the --require-enforcement preflight.
+    let enforcement = opts.perms.map(|p| adapter.perms_enforcement(p));
+
+    // Fail fast, before spawning, if the harness can't meet a demanded
+    // enforcement class. This is what turns "the prompt is a firewall, not a
+    // sandbox" into an actual guarantee.
+    if let Err(msg) = adapters::check_enforcement(adapter.as_ref(), &opts) {
+        eprintln!("anyagent: {msg}");
+        write_meta_file(
+            &opts,
+            &Metadata::build(&opts, None, 0, ExitStatus::EnforcementUnsupported, enforcement),
+        );
+        return ExitCode::from(ExitStatus::EnforcementUnsupported.code());
+    }
+
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
 
@@ -99,8 +119,13 @@ fn main() -> ExitCode {
             } else {
                 ExitStatus::Ok
             };
-            let metadata =
-                Metadata::build(&opts, Some(&outcome.summary), outcome.duration_ms, status);
+            let metadata = Metadata::build(
+                &opts,
+                Some(&outcome.summary),
+                outcome.duration_ms,
+                status,
+                enforcement,
+            );
             write_meta_file(&opts, &metadata);
 
             if !outcome.streamed {
@@ -127,7 +152,7 @@ fn main() -> ExitCode {
         Err(e) => {
             eprintln!("anyagent: {e}");
             let status = e.status();
-            write_meta_file(&opts, &Metadata::build(&opts, None, 0, status));
+            write_meta_file(&opts, &Metadata::build(&opts, None, 0, status, enforcement));
             ExitCode::from(status.code())
         }
     }

@@ -67,6 +67,9 @@ Claude protocol — handy for a fork or a wrapper shim. The default is `claude`.
 --output-format <text|json|stream-json>   default: text
 --model <name>
 --dangerously-skip-permissions
+--perms <read-only|workspace-write|full>   permission tier (by intent)
+--network <none|restricted|full>           network tier (by intent)
+--require-enforcement <os-sandbox|any>     demand an enforcement class (else exit 32)
 --cwd <path>                               working directory for the child
 --meta-file <path>                         write the run-metadata envelope here
 --timeout <seconds>                        wrapper wall-time cap (default 300)
@@ -85,6 +88,32 @@ for the Stop hook).
 > (`--allowedTools`, `--system-prompt`, `--add-dir`, `--resume`, …) forward
 > with their values. A _space-separated_ value for an _unrecognised_ flag is
 > the one remaining gap — pass it as `--flag=value`.
+
+## Permissions & enforcement
+
+`--perms` requests a permission tier _by intent_; each harness maps it to its
+native mechanism, and the metadata reports the **enforcement class** actually
+achieved — honestly, instead of a uniform-looking flag that lies.
+
+| intent            | codex (`codex exec`)                     | claude                                  |
+| ----------------- | ---------------------------------------- | --------------------------------------- |
+| `read-only`       | `--sandbox read-only` (os-sandbox)       | `--permission-mode plan` (agent-policy) |
+| `workspace-write` | `--sandbox workspace-write` (os-sandbox) | bypassPermissions (none)                |
+| `full`            | `--sandbox danger-full-access` (none)    | bypassPermissions (none)                |
+
+`--require-enforcement os-sandbox` makes the difference enforceable: it fails
+fast (exit 32) when the harness can't meet the demand, before anything runs.
+
+```bash
+anyagent --harness claude --perms read-only --require-enforcement os-sandbox "…"
+# anyagent: claude can only enforce read-only via agent-policy, not os-sandbox
+# (exit 32)
+```
+
+v1 is **report + passthrough**: it maps to native flags and reports the truth;
+it does not yet _add_ a sandbox to a harness that lacks one. `--network none`
+is OS-enforced only where the harness's sandbox already blocks network (codex
+read-only / workspace-write).
 
 ## Output contract
 

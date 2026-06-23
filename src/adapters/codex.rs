@@ -22,6 +22,7 @@ use serde_json::Value;
 
 use crate::adapters::{Adapter, DriverError, RunOutcome};
 use crate::args::Options;
+use crate::policy::{Enforcement, Network, Perms};
 use crate::signals;
 use crate::transcript::{Summary, Usage};
 
@@ -37,6 +38,29 @@ impl Adapter for CodexAdapter {
         stream_out: Option<&mut dyn Write>,
     ) -> Result<RunOutcome, DriverError> {
         run(opts, stream_out)
+    }
+
+    fn perms_enforcement(&self, perms: Perms) -> Enforcement {
+        match perms {
+            // codex `--sandbox read-only|workspace-write` is an OS sandbox.
+            Perms::ReadOnly | Perms::WorkspaceWrite => Enforcement::OsSandbox,
+            // danger-full-access removes the sandbox.
+            Perms::Full => Enforcement::Unenforced,
+        }
+    }
+
+    fn network_enforcement(&self, perms: Option<Perms>, network: Network) -> Enforcement {
+        match network {
+            // codex's read-only/workspace-write sandboxes disable network by
+            // default, so requesting no network is OS-enforced there.
+            Network::None => match perms {
+                Some(Perms::ReadOnly) | Some(Perms::WorkspaceWrite) => Enforcement::OsSandbox,
+                _ => Enforcement::Unenforced,
+            },
+            // We don't open the sandbox's network back up, so anything other
+            // than "none" is best-effort passthrough.
+            Network::Restricted | Network::Full => Enforcement::Unenforced,
+        }
     }
 }
 
@@ -172,6 +196,22 @@ fn build_argv(opts: &Options) -> Vec<String> {
     if let Some(cwd) = &opts.cwd {
         v.push("--cd".to_string());
         v.push(cwd.clone());
+    }
+    // Map the requested permission tier to codex's native OS sandbox.
+    match opts.perms {
+        Some(Perms::ReadOnly) => {
+            v.push("--sandbox".to_string());
+            v.push("read-only".to_string());
+        }
+        Some(Perms::WorkspaceWrite) => {
+            v.push("--sandbox".to_string());
+            v.push("workspace-write".to_string());
+        }
+        Some(Perms::Full) => {
+            v.push("--sandbox".to_string());
+            v.push("danger-full-access".to_string());
+        }
+        None => {}
     }
     if opts.skip_permissions {
         v.push("--dangerously-bypass-approvals-and-sandbox".to_string());

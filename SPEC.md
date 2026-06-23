@@ -115,7 +115,27 @@ JSON object, distinct from the answer on stdout: `harness`, `harness_version`
 meta file forces the transcript read even for `text` output, so the resolved
 model is always authoritative.
 
-### 3.2 Exit codes
+### 3.2 Permissions & enforcement
+
+`--perms`/`--network` request a tier by intent (`policy.rs`). Each adapter maps
+the tier to its harness's native mechanism and reports the **enforcement
+class** it actually achieves — `os-sandbox`, `agent-policy`, or `none`:
+
+| intent            | codex                          | enforcement | claude                   | enforcement  |
+| ----------------- | ------------------------------ | ----------- | ------------------------ | ------------ |
+| `read-only`       | `--sandbox read-only`          | os-sandbox  | `--permission-mode plan` | agent-policy |
+| `workspace-write` | `--sandbox workspace-write`    | os-sandbox  | bypassPermissions        | none         |
+| `full`            | `--sandbox danger-full-access` | none        | bypassPermissions        | none         |
+
+`--require-enforcement <os-sandbox|any>` is checked before spawn
+(`adapters::check_enforcement`): if the harness's class for the requested tier
+is weaker than demanded, exit 32 (`enforcement-unsupported`). `--network none`
+is os-sandbox-enforced only where the harness sandbox already blocks network
+(codex read-only / workspace-write). v1 is report + passthrough — it never
+_adds_ a sandbox a harness lacks. The `perms`/`enforcement`/`network` metadata
+fields carry the requested tiers and achieved class (`null` when unrequested).
+
+### 3.3 Exit codes
 
 A stable API: `0` ok · `10` agent-error · `20` timeout · `30`
 harness-not-found · `31` invalid-model · `32` enforcement-unsupported · `130`

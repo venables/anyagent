@@ -23,6 +23,7 @@ use std::io::Write;
 
 use crate::args::Options;
 use crate::harness::Harness;
+use crate::policy::{Enforcement, Network, Perms};
 use crate::transcript::Summary;
 
 pub mod claude;
@@ -39,6 +40,15 @@ pub trait Adapter {
         opts: &Options,
         stream_out: Option<&mut dyn Write>,
     ) -> Result<RunOutcome, DriverError>;
+
+    /// The enforcement class this harness achieves for a permission tier --
+    /// reported honestly (an OS sandbox vs merely agent policy vs nothing).
+    fn perms_enforcement(&self, perms: Perms) -> Enforcement;
+
+    /// The enforcement class for a network tier, given the permission tier in
+    /// effect (some harnesses gate network only via their sandbox, so it
+    /// depends on `perms`). `Full` network is never "enforced".
+    fn network_enforcement(&self, perms: Option<Perms>, network: Network) -> Enforcement;
 }
 
 /// Resolve a harness to the adapter that drives it. Returns `None` for a
@@ -53,6 +63,42 @@ pub fn for_harness(harness: &Harness) -> Option<Box<dyn Adapter>> {
         Harness::Codex => Some(Box::new(codex::CodexAdapter)),
         Harness::Opencode | Harness::Gemini | Harness::Pi => None,
     }
+}
+
+/// Verify the harness can meet a `--require-enforcement` demand for the
+/// requested perms/network tiers, *before* spawning anything. Returns an
+/// explanatory message (for exit 32) when it cannot.
+pub fn check_enforcement(adapter: &dyn Adapter, opts: &Options) -> Result<(), String> {
+    let Some(req) = opts.require_enforcement else {
+        return Ok(());
+    };
+    let harness = opts.harness.name();
+
+    if let Some(perms) = opts.perms {
+        let actual = adapter.perms_enforcement(perms);
+        if !req.satisfied_by(actual) {
+            return Err(format!(
+                "{harness} can only enforce {} via {}, not {}",
+                perms.label(),
+                actual.label(),
+                req.label(),
+            ));
+        }
+    }
+
+    if let Some(network) = opts.network {
+        let actual = adapter.network_enforcement(opts.perms, network);
+        if !req.satisfied_by(actual) {
+            return Err(format!(
+                "{harness} can only enforce network={} via {}, not {}",
+                network.label(),
+                actual.label(),
+                req.label(),
+            ));
+        }
+    }
+
+    Ok(())
 }
 
 pub struct RunOutcome {
