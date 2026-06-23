@@ -256,7 +256,7 @@ pub fn run(opts: &Options, mut stream_out: Option<&mut dyn Write>) -> Result<Run
     let mut streamed = false;
     if streaming
         && let Some(w) = reborrow(&mut stream_out) {
-            crate::emit::emit_json(w, &summary, duration_ms).map_err(DriverError::Io)?;
+            crate::emit::emit_result_envelope(w, &summary, duration_ms).map_err(DriverError::Io)?;
             let _ = w.flush();
             streamed = true;
         }
@@ -348,7 +348,12 @@ fn summarize(
     fields: &PayloadFields,
     fallback_transcript: Option<&str>,
 ) -> Result<Summary, DriverError> {
+    // Text output normally uses the payload's message directly to avoid waiting
+    // on the transcript flush. But the transcript is the only authoritative
+    // source of the resolved model, so when a metadata file is requested we
+    // fall through to reading it (then still fall back to the payload).
     if opts.output_format == OutputFormat::Text
+        && opts.meta_file.is_none()
         && let Some(msg) = &fields.last_assistant_message {
             return Ok(payload_only_summary(msg, fields));
         }
@@ -378,6 +383,9 @@ fn payload_only_summary(msg: &str, fields: &PayloadFields) -> Summary {
     Summary {
         final_text: msg.to_string(),
         session_id: fields.session_id.clone().unwrap_or_default(),
+        // The payload-only fast path has no transcript to read the model from;
+        // metadata reports it as "unknown" rather than guessing.
+        model: String::new(),
         is_error: false,
         num_turns: 1,
         total_cost_usd: 0.0,
@@ -606,9 +614,9 @@ mod tests {
 
     #[test]
     fn exit_codes_map() {
-        assert_eq!(DriverError::StopTimeout.exit_code(), 124);
-        assert_eq!(DriverError::TranscriptUnavailable.exit_code(), 1);
-        assert_eq!(DriverError::Interrupted.exit_code(), 130);
-        assert_eq!(DriverError::Io(std::io::Error::other("x")).exit_code(), 2);
+        assert_eq!(DriverError::StopTimeout.status().code(), 20);
+        assert_eq!(DriverError::TranscriptUnavailable.status().code(), 10);
+        assert_eq!(DriverError::Interrupted.status().code(), 130);
+        assert_eq!(DriverError::Io(std::io::Error::other("x")).status().code(), 2);
     }
 }

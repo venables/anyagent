@@ -16,6 +16,10 @@ pub struct Usage {
 pub struct Summary {
     pub final_text: String,
     pub session_id: String,
+    /// The model the harness actually ran, read from the transcript's assistant
+    /// events (`message.model`) -- the launcher's truth, not the agent's
+    /// self-report. Empty when the transcript never exposed it.
+    pub model: String,
     pub is_error: bool,
     pub num_turns: u32,
     pub total_cost_usd: f64,
@@ -34,6 +38,7 @@ pub enum ParseError {
 pub fn parse(bytes: &str) -> Result<Summary, ParseError> {
     let mut final_text = String::new();
     let mut session_id = String::new();
+    let mut model = String::new();
     let mut replay = String::new();
     let mut usage = Usage::default();
     let mut is_error = false;
@@ -79,6 +84,11 @@ pub fn parse(bytes: &str) -> Result<Summary, ParseError> {
                 // We want the *last* assistant message; each new one resets.
                 final_text.clear();
                 if let Some(msg) = obj.get("message") {
+                    // The model the harness actually ran. Each assistant event
+                    // carries it; the last one seen is authoritative.
+                    if let Some(m) = msg.get("model").and_then(Value::as_str) {
+                        model = m.to_string();
+                    }
                     if let Some(content) = msg.get("content").and_then(Value::as_array) {
                         for block in content {
                             if block.get("type").and_then(Value::as_str) == Some("text")
@@ -123,6 +133,7 @@ pub fn parse(bytes: &str) -> Result<Summary, ParseError> {
     Ok(Summary {
         final_text,
         session_id,
+        model,
         is_error,
         num_turns,
         total_cost_usd,
@@ -221,6 +232,20 @@ mod tests {
         );
         let s = parse(jsonl).unwrap();
         assert_eq!(s.final_text, "alive");
+    }
+
+    #[test]
+    fn extracts_model_from_assistant_event() {
+        let jsonl = r#"{"type":"assistant","session_id":"m","message":{"model":"claude-opus-4-8","content":[{"type":"text","text":"hi"}]}}"#;
+        let s = parse(jsonl).unwrap();
+        assert_eq!(s.model, "claude-opus-4-8");
+    }
+
+    #[test]
+    fn model_empty_when_absent() {
+        let jsonl = r#"{"type":"assistant","session_id":"m","message":{"content":[{"type":"text","text":"hi"}]}}"#;
+        let s = parse(jsonl).unwrap();
+        assert_eq!(s.model, "");
     }
 
     #[test]

@@ -1,17 +1,39 @@
 //! Output formatters. `text` prints the final assistant message; `json`
-//! prints a single `result` envelope shaped like `claude -p --output-format
-//! json`. `stream-json` reuses the json envelope as the trailing line after
-//! the live transcript replay the driver emits.
+//! wraps `{answer, metadata}` so the answer and the authoritative run metadata
+//! arrive together on stdout. `stream-json` emits the live transcript replay
+//! the driver produces, then a trailing `result` envelope shaped like
+//! `claude -p --output-format json` (`emit_result_envelope`).
 
 use std::io::Write;
 
+use crate::meta::Metadata;
 use crate::transcript::Summary;
 
 pub fn emit_text(w: &mut dyn Write, summary: &Summary) -> std::io::Result<()> {
     writeln!(w, "{}", summary.final_text)
 }
 
-pub fn emit_json(w: &mut dyn Write, summary: &Summary, duration_ms: u64) -> std::io::Result<()> {
+/// `--output json`: the agent's answer plus the authoritative metadata
+/// envelope, together as one object on stdout.
+pub fn emit_answer_json(
+    w: &mut dyn Write,
+    summary: &Summary,
+    metadata: &Metadata,
+) -> std::io::Result<()> {
+    let envelope = serde_json::json!({
+        "answer": summary.final_text,
+        "metadata": metadata.to_json(),
+    });
+    writeln!(w, "{envelope}")
+}
+
+/// The trailing `result` envelope for stream-json, shaped like
+/// `claude -p --output-format json`.
+pub fn emit_result_envelope(
+    w: &mut dyn Write,
+    summary: &Summary,
+    duration_ms: u64,
+) -> std::io::Result<()> {
     let envelope = serde_json::json!({
         "type": "result",
         "subtype": if summary.is_error { "error" } else { "success" },
@@ -42,6 +64,7 @@ mod tests {
         Summary {
             final_text: "OK".into(),
             session_id: "sid".into(),
+            model: "claude-opus-4-8".into(),
             is_error: false,
             num_turns: 1,
             total_cost_usd: 0.0,
@@ -63,9 +86,9 @@ mod tests {
     }
 
     #[test]
-    fn json_envelope_shape() {
+    fn result_envelope_shape() {
         let mut buf = Vec::new();
-        emit_json(&mut buf, &summary(), 2911).unwrap();
+        emit_result_envelope(&mut buf, &summary(), 2911).unwrap();
         let v: serde_json::Value = serde_json::from_slice(&buf).unwrap();
         assert_eq!(v["type"], "result");
         assert_eq!(v["subtype"], "success");
@@ -74,5 +97,19 @@ mod tests {
         assert_eq!(v["duration_ms"], 2911);
         assert_eq!(v["usage"]["input_tokens"], 6);
         assert!(v["permission_denials"].is_array());
+    }
+
+    #[test]
+    fn answer_json_wraps_answer_and_metadata() {
+        use crate::args::Options;
+        use crate::meta::{ExitStatus, Metadata};
+        let s = summary();
+        let metadata = Metadata::build(&Options::default(), Some(&s), 50, ExitStatus::Ok);
+        let mut buf = Vec::new();
+        emit_answer_json(&mut buf, &s, &metadata).unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&buf).unwrap();
+        assert_eq!(v["answer"], "OK");
+        assert_eq!(v["metadata"]["model_resolved"], "claude-opus-4-8");
+        assert_eq!(v["metadata"]["exit_status"], "ok");
     }
 }

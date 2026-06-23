@@ -8,6 +8,7 @@ mod dec;
 mod emit;
 mod harness;
 mod hook;
+mod meta;
 mod pty;
 mod signals;
 mod stream;
@@ -16,7 +17,19 @@ mod transcript;
 use std::io::{IsTerminal, Read, Write};
 use std::process::ExitCode;
 
-use args::OutputFormat;
+use args::{Options, OutputFormat};
+use meta::{ExitStatus, Metadata};
+
+/// Write the authoritative metadata envelope to `--meta-file` when requested.
+/// Best-effort: a write failure warns on stderr but does not change the run's
+/// outcome (the answer on stdout is what matters).
+fn write_meta_file(opts: &Options, metadata: &Metadata) {
+    let Some(path) = &opts.meta_file else { return };
+    let json = metadata.to_json().to_string();
+    if let Err(e) = std::fs::write(path, format!("{json}\n")) {
+        eprintln!("anyagent: failed writing --meta-file {path}: {e}");
+    }
+}
 
 fn main() -> ExitCode {
     signals::install();
@@ -43,7 +56,8 @@ fn main() -> ExitCode {
                 opts.harness.name(),
                 harness::KNOWN_NAMES.join(", ")
             );
-            return ExitCode::from(2);
+            write_meta_file(&opts, &Metadata::build(&opts, None, 0, ExitStatus::HarnessNotFound));
+            return ExitCode::from(ExitStatus::HarnessNotFound.code());
         }
     };
 
@@ -80,34 +94,41 @@ fn main() -> ExitCode {
 
     match adapter.run(&opts, stream_arg) {
         Ok(outcome) => {
+            let status = if outcome.summary.is_error {
+                ExitStatus::AgentError
+            } else {
+                ExitStatus::Ok
+            };
+            let metadata =
+                Metadata::build(&opts, Some(&outcome.summary), outcome.duration_ms, status);
+            write_meta_file(&opts, &metadata);
+
             if !outcome.streamed {
                 let res = match opts.output_format {
                     OutputFormat::Text => emit::emit_text(&mut out, &outcome.summary),
                     OutputFormat::Json => {
-                        emit::emit_json(&mut out, &outcome.summary, outcome.duration_ms)
+                        emit::emit_answer_json(&mut out, &outcome.summary, &metadata)
                     }
                     OutputFormat::StreamJson => {
                         // Reached only if no stream writer was available; fall
                         // back to a buffered replay + result envelope.
                         out.write_all(outcome.summary.jsonl_replay.as_bytes()).and_then(|_| {
-                            emit::emit_json(&mut out, &outcome.summary, outcome.duration_ms)
+                            emit::emit_result_envelope(&mut out, &outcome.summary, outcome.duration_ms)
                         })
                     }
                 };
                 if let Err(e) = res {
                     eprintln!("anyagent: write failed: {e}");
-                    return ExitCode::from(2);
+                    return ExitCode::from(ExitStatus::Internal.code());
                 }
             }
-            if outcome.summary.is_error {
-                ExitCode::from(1)
-            } else {
-                ExitCode::SUCCESS
-            }
+            ExitCode::from(status.code())
         }
         Err(e) => {
             eprintln!("anyagent: {e}");
-            ExitCode::from(e.exit_code())
+            let status = e.status();
+            write_meta_file(&opts, &Metadata::build(&opts, None, 0, status));
+            ExitCode::from(status.code())
         }
     }
 }

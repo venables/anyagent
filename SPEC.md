@@ -97,11 +97,30 @@ skip-permissions` does not suppress this dialog.)
 
 ## 3. Output fidelity
 
-| Format        | Stdout                                                          |
-| ------------- | --------------------------------------------------------------- |
-| `text`        | Final assistant message + `\n`.                                 |
-| `json`        | One `result` object (session_id, result, is_error, usage, …).   |
-| `stream-json` | Transcript JSONL lines live, then the trailing `result` object. |
+| Format        | Stdout                                                             |
+| ------------- | ------------------------------------------------------------------ |
+| `text`        | Final assistant message + `\n`.                                    |
+| `json`        | `{answer, metadata}` — the answer plus the authoritative envelope. |
+| `stream-json` | Transcript JSONL lines live, then the trailing `result` object.    |
+
+### 3.1 Metadata side channel
+
+`--meta-file <path>` writes the authoritative run metadata (`meta.rs`) as a
+JSON object, distinct from the answer on stdout: `harness`, `harness_version`
+(best-effort), `model_requested`, `model_resolved`, `duration_ms`,
+`exit_status`, `session_id`, `num_turns`, `total_cost_usd`, `usage`.
+`model_resolved` is read from the transcript's assistant events
+(`message.model`) — the launcher's truth, not the agent's self-report — and is
+`"unknown"` rather than an echo when the harness never exposed it. Requesting a
+meta file forces the transcript read even for `text` output, so the resolved
+model is always authoritative.
+
+### 3.2 Exit codes
+
+A stable API: `0` ok · `10` agent-error · `20` timeout · `30`
+harness-not-found · `31` invalid-model · `32` enforcement-unsupported · `130`
+interrupted · `2` internal. The `exit_status` metadata field carries the
+matching label. (`31`/`32` are reserved for Phases 6/4.)
 
 ## 4. Public surface
 

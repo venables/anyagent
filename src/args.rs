@@ -29,6 +29,9 @@ pub struct Options {
     pub model: Option<String>,
     pub skip_permissions: bool,
     pub cwd: Option<String>,
+    /// Path to write the authoritative metadata envelope to (a side channel
+    /// distinct from the answer on stdout). `None` disables it.
+    pub meta_file: Option<String>,
     pub timeout_ms: u64,
     pub debug: bool,
     pub cols: u16,
@@ -46,6 +49,7 @@ impl Default for Options {
             model: None,
             skip_permissions: false,
             cwd: None,
+            meta_file: None,
             timeout_ms: 300_000,
             debug: false,
             cols: 120,
@@ -151,6 +155,7 @@ pub fn parse(args: &[String]) -> Result<Options, ArgError> {
             }
             "--model" => opts.model = Some(value(inline, args, &mut i, flag)?.to_string()),
             "--cwd" => opts.cwd = Some(value(inline, args, &mut i, flag)?.to_string()),
+            "--meta-file" => opts.meta_file = Some(value(inline, args, &mut i, flag)?.to_string()),
             "--timeout" => {
                 let v = value(inline, args, &mut i, flag)?;
                 let secs: u64 = v.parse().map_err(|_| ArgError::BadNumber(v.to_string()))?;
@@ -324,6 +329,16 @@ mod tests {
         let o = parse(&v(&["--resume=abc123", "hi"])).unwrap();
         assert!(o.extra_args.windows(2).any(|w| w == ["--resume", "abc123"]));
         assert_eq!(o.prompt, "hi");
+    }
+
+    #[test]
+    fn meta_file_captured() {
+        let o = parse(&v(&["--meta-file", "/tmp/m.json", "hi"])).unwrap();
+        assert_eq!(o.meta_file.as_deref(), Some("/tmp/m.json"));
+        assert_eq!(o.prompt, "hi");
+
+        let o = parse(&v(&["--meta-file=/tmp/n.json", "hi"])).unwrap();
+        assert_eq!(o.meta_file.as_deref(), Some("/tmp/n.json"));
     }
 
     #[test]

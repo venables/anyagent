@@ -73,12 +73,14 @@ pub enum DriverError {
 }
 
 impl DriverError {
-    pub fn exit_code(&self) -> u8 {
+    /// Map to the stable run status (and thus exit code) for this failure.
+    pub fn status(&self) -> crate::meta::ExitStatus {
+        use crate::meta::ExitStatus;
         match self {
-            Self::SessionStartTimeout | Self::StopTimeout => 124,
-            Self::TranscriptUnavailable => 1,
-            Self::Interrupted => 130,
-            Self::ChildExitedEarly(_) | Self::Spawn(_) | Self::Io(_) => 2,
+            Self::SessionStartTimeout | Self::StopTimeout => ExitStatus::Timeout,
+            Self::TranscriptUnavailable => ExitStatus::AgentError,
+            Self::Interrupted => ExitStatus::Interrupted,
+            Self::ChildExitedEarly(_) | Self::Spawn(_) | Self::Io(_) => ExitStatus::Internal,
         }
     }
 }

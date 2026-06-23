@@ -67,6 +67,7 @@ default is `claude`.
 --model <name>
 --dangerously-skip-permissions
 --cwd <path>                               working directory for the child
+--meta-file <path>                         write the run-metadata envelope here
 --timeout <seconds>                        wrapper wall-time cap (default 300)
 --cols <n> / --rows <n>                    PTY size (default 120x40)
 --debug | -d                               wrapper debug traces on stderr
@@ -84,15 +85,40 @@ for the Stop hook).
 > with their values. A _space-separated_ value for an _unrecognised_ flag is
 > the one remaining gap — pass it as `--flag=value`.
 
+## Output contract
+
+- **stdout** carries only the agent's answer (`text`), or `{answer, metadata}`
+  (`--output-format json`).
+- **`--meta-file <path>`** writes the authoritative run-metadata envelope to a
+  side channel, distinct from the answer:
+
+  ```json
+  {
+    "harness": "claude", "harness_version": null,
+    "model_requested": "opus", "model_resolved": "claude-opus-4-8",
+    "duration_ms": 84213, "exit_status": "ok",
+    "session_id": "…", "num_turns": 1, "total_cost_usd": 0.04,
+    "usage": { "input_tokens": 1200, "output_tokens": 800, … }
+  }
+  ```
+
+  `model_resolved` is read from the transcript (the launcher's truth), not the
+  agent's self-report; it is `"unknown"` when the harness never exposed it.
+
 ## Exit codes
 
-| Code  | Meaning                                                 |
-| ----- | ------------------------------------------------------- |
-| `0`   | Success.                                                |
-| `1`   | Assistant returned an error, or no message recoverable. |
-| `2`   | Wrapper internal error (spawn/PTY/IO).                  |
-| `124` | Timed out (before or after the UI came up).             |
-| `130` | Interrupted (SIGINT/SIGTERM).                           |
+Exit codes are a stable API orchestrators can branch on.
+
+| Code  | `exit_status`             | Meaning                                                |
+| ----- | ------------------------- | ------------------------------------------------------ |
+| `0`   | `ok`                      | Success.                                               |
+| `10`  | `agent-error`             | Assistant errored, or no message recoverable.          |
+| `20`  | `timeout`                 | Timed out (before or after the UI came up).            |
+| `30`  | `harness-not-found`       | The selected harness has no adapter.                   |
+| `31`  | `invalid-model`           | Unknown model for the harness (reserved).              |
+| `32`  | `enforcement-unsupported` | Harness can't meet `--require-enforcement` (reserved). |
+| `130` | `interrupted`             | Interrupted (SIGINT/SIGTERM).                          |
+| `2`   | `internal`                | Wrapper internal error (spawn/PTY/IO).                 |
 
 ## Caveats
 
