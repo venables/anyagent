@@ -55,8 +55,18 @@ pub fn spawn(cfg: SpawnConfig) -> Result<Spawned> {
         cmd.env(k, v);
     }
 
-    if let Some(dir) = cfg.cwd {
-        cmd.cwd(dir);
+    // Set the child's working directory explicitly. portable-pty's
+    // CommandBuilder defaults an unset cwd to the user's *home* directory, not
+    // the parent's cwd -- which would make the agent run in the wrong place
+    // (and, for claude, derive a $HOME-encoded transcript path). Inherit our
+    // own cwd when the caller didn't pass one.
+    match cfg.cwd {
+        Some(dir) => cmd.cwd(dir),
+        None => {
+            if let Ok(dir) = std::env::current_dir() {
+                cmd.cwd(dir);
+            }
+        }
     }
 
     let child = pair.slave.spawn_command(cmd)?;

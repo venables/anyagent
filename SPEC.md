@@ -126,8 +126,18 @@ JSON object, distinct from the answer on stdout: `harness`, `harness_version`
 `model_resolved` is read from the transcript's assistant events
 (`message.model`) — the launcher's truth, not the agent's self-report — and is
 `"unknown"` rather than an echo when the harness never exposed it. Requesting a
-meta file forces the transcript read even for `text` output, so the resolved
-model is always authoritative.
+meta file forces the transcript read even for `text` output.
+
+**Per-harness reality.** codex exposes the resolved model + usage reliably (its
+rollout file / `--json` stream), so its metadata is fully authoritative. claude
+exposes model + usage _only_ in its session transcript, and that transcript is
+written by `claude -p` (print mode) or a clean TUI exit — **not** while a
+PTY-driven interactive session is alive, and the Stop hook payload omits both.
+So for the claude harness, `model_resolved` is honestly `"unknown"` and usage
+is `0` today. Closing that gap requires getting the transcript to flush (a
+clean interactive quit) or a print-mode path for claude — see TODO. This is the
+honest-`unknown` behavior the spec mandates, but it is the headline feature not
+yet delivering on the headline harness.
 
 ### 3.2 Permissions & enforcement
 

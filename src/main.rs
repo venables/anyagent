@@ -30,6 +30,21 @@ use args::{Options, OutputFormat};
 use command::Command;
 use meta::{ExitStatus, Metadata};
 
+/// Build the metadata envelope and stamp the best-effort harness version onto
+/// it. Version probing spawns `<bin> --version`, so it is kept out of
+/// `Metadata::build` (which stays hermetic for unit tests) and done here.
+fn build_meta(
+    opts: &Options,
+    summary: Option<&transcript::Summary>,
+    duration_ms: u64,
+    status: ExitStatus,
+    enforcement: Option<policy::Enforcement>,
+) -> Metadata {
+    let mut m = Metadata::build(opts, summary, duration_ms, status, enforcement);
+    m.harness_version = opts.harness.probe_version();
+    m
+}
+
 /// Write the authoritative metadata envelope to `--meta-file` when requested.
 /// Best-effort: a write failure warns on stderr but does not change the run's
 /// outcome (the answer on stdout is what matters).
@@ -94,7 +109,7 @@ fn run(mut opts: Options) -> ExitCode {
             );
             write_meta_file(
                 &opts,
-                &Metadata::build(&opts, None, 0, ExitStatus::HarnessNotFound, None),
+                &build_meta(&opts, None, 0, ExitStatus::HarnessNotFound, None),
             );
             return ExitCode::from(ExitStatus::HarnessNotFound.code());
         }
@@ -131,7 +146,7 @@ fn run(mut opts: Options) -> ExitCode {
         eprintln!("anyagent: {msg}");
         write_meta_file(
             &opts,
-            &Metadata::build(&opts, None, 0, ExitStatus::EnforcementUnsupported, enforcement),
+            &build_meta(&opts, None, 0, ExitStatus::EnforcementUnsupported, enforcement),
         );
         return ExitCode::from(ExitStatus::EnforcementUnsupported.code());
     }
@@ -156,7 +171,7 @@ fn run(mut opts: Options) -> ExitCode {
             } else {
                 ExitStatus::Ok
             };
-            let metadata = Metadata::build(
+            let metadata = build_meta(
                 &opts,
                 Some(&outcome.summary),
                 outcome.duration_ms,
@@ -189,7 +204,7 @@ fn run(mut opts: Options) -> ExitCode {
         Err(e) => {
             eprintln!("anyagent: {e}");
             let status = e.status();
-            write_meta_file(&opts, &Metadata::build(&opts, None, 0, status, enforcement));
+            write_meta_file(&opts, &build_meta(&opts, None, 0, status, enforcement));
             ExitCode::from(status.code())
         }
     }
