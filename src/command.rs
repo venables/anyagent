@@ -58,8 +58,8 @@ answer; metadata goes to --meta-file; logs go to stderr.
 Usage:
   anyagent [run] [options] [--] \"<prompt>\"   run a one-shot prompt
   anyagent list harnesses                     installed/implemented harnesses + versions
-  anyagent list models [--harness <name>]     best-effort model discovery
-  anyagent capabilities [--harness <name>]    per-harness perms→enforcement, network, outputs
+  anyagent list models [--agent <name>]       best-effort model discovery
+  anyagent capabilities [--agent <name>]      per-agent perms→enforcement, network, outputs
   anyagent --help | --version
 
 `run` is the default; a bare prompt is sugar for it, and if no prompt is given
@@ -67,7 +67,8 @@ it is read from stdin. `run`/`list`/`capabilities` are only recognised as the
 first argument.
 
 Run options:
-  -H, --harness <name|path>   claude (default) | codex | path to a claude-compatible binary
+  -A, --agent <name|path>     claude (default) | codex | path to a claude-compatible binary
+                              (alias: -H, --harness)
       --model <id|default>    model id; 'default' requests the harness's own default
       --output-format <fmt>   text (default) | json ({answer,metadata}) | stream-json
       --perms <tier>          read-only | workspace-write | full   (permission tier, by intent)
@@ -77,7 +78,9 @@ Run options:
       --cwd <path>            working directory for the agent
       --timeout <seconds>     wall-time cap (default 300)
       --dangerously-skip-permissions
-      --cols <n> / --rows <n> PTY size for the claude harness (default 120×40)
+      --pty                   drive the agent's interactive TUI under a PTY, for
+                              when its non-interactive mode is unavailable
+      --cols <n> / --rows <n> PTY size (with --pty; default 120×40)
   -d, --debug                 wrapper + harness debug traces on stderr
       --                      end of options; the rest is the prompt
 
@@ -99,7 +102,7 @@ fn parse_list(rest: &[String]) -> Result<Command, ArgError> {
     }
 }
 
-/// Scan for a `-H`/`--harness <name>` (or `=name`) flag in `rest`.
+/// Scan for an `-A`/`--agent` (or `-H`/`--harness`) `<name>` (or `=name`) flag.
 fn harness_flag(rest: &[String]) -> Result<Option<Harness>, ArgError> {
     let mut i = 0;
     while i < rest.len() {
@@ -108,7 +111,7 @@ fn harness_flag(rest: &[String]) -> Result<Option<Harness>, ArgError> {
             Some((f, v)) => (f, Some(v)),
             None => (a.as_str(), None),
         };
-        if flag == "-H" || flag == "--harness" {
+        if matches!(flag, "-A" | "--agent" | "-H" | "--harness") {
             let val = match inline {
                 Some(v) => v.to_string(),
                 None => {
@@ -132,7 +135,7 @@ const PERM_TIERS: [Perms; 3] = [Perms::ReadOnly, Perms::WorkspaceWrite, Perms::F
 pub fn list_harnesses(w: &mut dyn Write) -> std::io::Result<()> {
     for name in KNOWN_NAMES {
         let h = Harness::parse(name);
-        let status = if adapters::for_harness(&h).is_some() {
+        let status = if adapters::for_harness(&h, false).is_some() {
             "implemented"
         } else {
             "reserved"
@@ -156,7 +159,7 @@ pub fn capabilities(w: &mut dyn Write, harness: Option<Harness>) -> std::io::Res
     };
     let mut first = true;
     for h in targets {
-        let Some(adapter) = adapters::for_harness(&h) else {
+        let Some(adapter) = adapters::for_harness(&h, false) else {
             continue;
         };
         if !first {
@@ -178,7 +181,7 @@ pub fn list_models(w: &mut dyn Write, harness: Option<Harness>) -> std::io::Resu
     };
     let mut first = true;
     for h in targets {
-        if adapters::for_harness(&h).is_none() {
+        if adapters::for_harness(&h, false).is_none() {
             continue;
         }
         if !first {

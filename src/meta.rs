@@ -61,6 +61,11 @@ impl ExitStatus {
 /// The authoritative metadata envelope.
 pub struct Metadata {
     pub harness: String,
+    /// How the harness was driven: `"print"` for its native non-interactive
+    /// mode (the default) or `"pty"` for the `--pty` interactive-TUI fallback.
+    /// Reported so a `"pty"` run's `unknown`/0 model+usage isn't mistaken for
+    /// missing data.
+    pub drive: &'static str,
     /// Best-effort harness version; `None` (serialized `null`) when unprobed.
     pub harness_version: Option<String>,
     /// The model the caller asked for; `"default"` when none was specified.
@@ -100,6 +105,7 @@ impl Metadata {
             .to_string();
         Self {
             harness: opts.harness.name().to_string(),
+            drive: if opts.pty { "pty" } else { "print" },
             harness_version: None,
             model_requested,
             model_resolved,
@@ -118,6 +124,7 @@ impl Metadata {
     pub fn to_json(&self) -> serde_json::Value {
         serde_json::json!({
             "harness": self.harness,
+            "drive": self.drive,
             "harness_version": self.harness_version,
             "model_requested": self.model_requested,
             "model_resolved": self.model_resolved,
@@ -185,6 +192,16 @@ mod tests {
         assert_eq!(m.model_resolved, "claude-opus-4-8");
         assert_eq!(m.to_json()["exit_status"], "ok");
         assert_eq!(m.to_json()["usage"]["input_tokens"], 12);
+    }
+
+    #[test]
+    fn drive_reflects_pty_flag() {
+        let m = Metadata::build(&Options::default(), Some(&summary()), 1, ExitStatus::Ok, None);
+        assert_eq!(m.to_json()["drive"], "print");
+
+        let opts = Options { pty: true, ..Options::default() };
+        let m = Metadata::build(&opts, Some(&summary()), 1, ExitStatus::Ok, None);
+        assert_eq!(m.to_json()["drive"], "pty");
     }
 
     #[test]

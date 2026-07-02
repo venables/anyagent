@@ -9,12 +9,12 @@ deliberately incomplete.
 - [x] **claude metadata (`model_resolved`/usage).** RESOLVED. The default
       `claude` harness now drives `claude -p` (print mode); its JSON envelope's
       `modelUsage` key is the authoritative `model_resolved`, and usage/cost
-      come straight from it. The PTY drive moved to the `claude-pty` harness as
+      come straight from it. The PTY drive moved behind the `--pty` flag as
       a fallback. (Background: claude writes its transcript only in print mode
       or on a clean TUI exit — never while a PTY-driven session is alive, and
       the Stop payload omits model + usage; verified the transcript never
-      appears even after 15s alive, and SIGTERM/SIGINT don't flush it. So
-      `claude-pty` honestly reports `unknown`/0; use `claude` for metadata.)
+      appears even after 15s alive, and SIGTERM/SIGINT don't flush it. So a
+      `--pty` run honestly reports `unknown`/0; use the default for metadata.)
 
 - [ ] **Flag passthrough fidelity (partial).** `--flag=value` and a known set
       of claude value-flags (`KNOWN_VALUE_FLAGS` in `src/args.rs`) now forward

@@ -57,12 +57,19 @@ pub trait Adapter {
 /// recognised-but-unimplemented harness, so the caller can fail fast with a
 /// clear message instead of silently behaving like another backend.
 ///
+/// `pty` is the undocumented `--pty` escape hatch: for claude (and a
+/// claude-compatible [`Harness::Custom`] path) it selects the interactive
+/// TUI-under-a-PTY drive instead of `claude -p`. Harnesses with no PTY drive
+/// ignore it for now.
+///
 /// A [`Harness::Custom`] path is assumed claude-compatible and driven with the
 /// Claude protocol (handy for a fork or a wrapper shim).
-pub fn for_harness(harness: &Harness) -> Option<Box<dyn Adapter>> {
+pub fn for_harness(harness: &Harness, pty: bool) -> Option<Box<dyn Adapter>> {
     match harness {
+        Harness::Claude | Harness::Custom(_) if pty => {
+            Some(Box::new(claude_pty::ClaudePtyAdapter))
+        }
         Harness::Claude | Harness::Custom(_) => Some(Box::new(claude::ClaudeAdapter)),
-        Harness::ClaudePty => Some(Box::new(claude_pty::ClaudePtyAdapter)),
         Harness::Codex => Some(Box::new(codex::CodexAdapter)),
         Harness::Opencode | Harness::Gemini | Harness::Pi => None,
     }

@@ -1,7 +1,7 @@
-//! Shared helpers for the two claude adapters -- the print-mode default
-//! (`claude`) and the PTY drive (`claude-pty`). They map a requested permission
-//! tier to the same native claude flags and report the same enforcement
-//! classes; only the invocation mechanism differs.
+//! Shared helpers for the two claude adapters -- the print-mode default and
+//! the `--pty` drive. They map a requested permission tier to the same native
+//! claude flags and report the same enforcement classes; only the invocation
+//! mechanism differs.
 
 use crate::args::Options;
 use crate::harness::Harness;
@@ -11,7 +11,7 @@ use crate::policy::{Enforcement, Network, Perms};
 /// tests, or a cmux-style shim that would clobber our flags); a custom harness
 /// already carries its own path.
 pub fn resolve_bin(harness: &Harness) -> String {
-    if matches!(harness, Harness::Claude | Harness::ClaudePty)
+    if matches!(harness, Harness::Claude)
         && let Ok(b) = std::env::var("ANYAGENT_CLAUDE_BIN")
     {
         return b;

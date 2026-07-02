@@ -1,28 +1,28 @@
 //! Selection of which agent CLI ("harness") anyagent drives.
 //!
 //! anyagent aims to be one non-interactive interface in front of any coding
-//! agent. Today only the Claude protocol is implemented -- spawning the
-//! interactive TUI under a PTY, injecting a Stop hook via `--settings`, and
-//! capturing the final assistant message. The other names below are recognised
-//! and reserved so the `--harness` surface is stable as backends are added;
-//! selecting one that isn't wired up yet fails fast with a clear message
-//! (see [`crate::adapters::for_harness`]).
+//! agent. Today only the Claude protocol is implemented -- by default via
+//! `claude -p` (print mode), or, with the undocumented `--pty` flag, by
+//! spawning the interactive TUI under a PTY, injecting a Stop hook via
+//! `--settings`, and capturing the final assistant message. The other names
+//! below are recognised and reserved so the `--harness` surface is stable as
+//! backends are added; selecting one that isn't wired up yet fails fast with a
+//! clear message (see [`crate::adapters::for_harness`]).
 //!
 //! A value that is not a known name is treated as a path/binary and driven with
 //! the Claude protocol, so a fork or wrapper of `claude` can be pointed at
 //! directly (this subsumes the `ANYAGENT_CLAUDE_BIN` escape hatch).
 
 /// Known harness names, in the order shown in help/error text.
-pub const KNOWN_NAMES: &[&str] = &["claude", "claude-pty", "codex", "opencode", "gemini", "pi"];
+pub const KNOWN_NAMES: &[&str] = &["claude", "codex", "opencode", "gemini", "pi"];
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub enum Harness {
-    /// Default claude harness, driven via `claude -p` (print mode).
+    /// Default claude harness, driven via `claude -p` (print mode). The
+    /// undocumented `--pty` flag switches it to the interactive-TUI-under-a-PTY
+    /// drive for environments where `claude -p` is unavailable.
     #[default]
     Claude,
-    /// claude driven via the interactive TUI under a PTY -- the fallback for
-    /// environments where `claude -p` is unavailable.
-    ClaudePty,
     Codex,
     Opencode,
     Gemini,
@@ -38,7 +38,6 @@ impl Harness {
     pub fn parse(s: &str) -> Self {
         match s.to_ascii_lowercase().as_str() {
             "claude" => Self::Claude,
-            "claude-pty" => Self::ClaudePty,
             "codex" => Self::Codex,
             "opencode" => Self::Opencode,
             "gemini" => Self::Gemini,
@@ -51,7 +50,6 @@ impl Harness {
     pub fn name(&self) -> &str {
         match self {
             Self::Claude => "claude",
-            Self::ClaudePty => "claude-pty",
             Self::Codex => "codex",
             Self::Opencode => "opencode",
             Self::Gemini => "gemini",
@@ -77,8 +75,7 @@ impl Harness {
     /// The binary anyagent spawns for this harness.
     pub fn bin(&self) -> &str {
         match self {
-            // claude-pty drives the same `claude` binary, just interactively.
-            Self::Claude | Self::ClaudePty => "claude",
+            Self::Claude => "claude",
             Self::Codex => "codex",
             Self::Opencode => "opencode",
             Self::Gemini => "gemini",
@@ -119,11 +116,5 @@ mod tests {
         for n in KNOWN_NAMES {
             assert_eq!(Harness::parse(n).name(), *n);
         }
-    }
-
-    #[test]
-    fn claude_pty_drives_the_claude_binary() {
-        assert_eq!(Harness::ClaudePty.bin(), "claude");
-        assert_eq!(Harness::ClaudePty.name(), "claude-pty");
     }
 }

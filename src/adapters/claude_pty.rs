@@ -51,7 +51,7 @@ const TRANSCRIPT_RETRY_DELAY: Duration = Duration::from_millis(50);
 const POST_STOP_DRAIN_ROUNDS: u32 = 20;
 const POST_STOP_DRAIN_DELAY: Duration = Duration::from_millis(20);
 
-/// Drives the `claude` TUI under a PTY (`--harness claude-pty`). The
+/// Drives the `claude` TUI under a PTY (the undocumented `--pty` flag). The
 /// print-mode [`super::claude::ClaudeAdapter`] is the default; this is the
 /// fallback for environments where `claude -p` is unavailable.
 pub struct ClaudePtyAdapter;

@@ -10,7 +10,8 @@
 //! Stop-hook capture. A user-supplied `--settings` is rejected: we inject our
 //! own `--settings` to register the Stop hook.
 //!
-//! `-H` / `--harness` selects which agent CLI to drive (see `crate::harness`).
+//! `-A` / `--agent` selects which agent CLI to drive (`-H` / `--harness` is a
+//! kept alias for the internal noun; see `crate::harness`).
 
 use crate::harness::Harness;
 use crate::policy::{Network, Perms, RequireEnforcement};
@@ -37,6 +38,10 @@ pub struct Options {
     /// Enforcement class demanded by `--require-enforcement` (exit 32 if unmet).
     pub require_enforcement: Option<RequireEnforcement>,
     pub cwd: Option<String>,
+    /// Undocumented `--pty` escape hatch: drive the harness's interactive TUI
+    /// under a PTY instead of its native non-interactive mode (for claude, the
+    /// fallback when `claude -p` is unavailable).
+    pub pty: bool,
     /// Path to write the authoritative metadata envelope to (a side channel
     /// distinct from the answer on stdout). `None` disables it.
     pub meta_file: Option<String>,
@@ -60,6 +65,7 @@ impl Default for Options {
             network: None,
             require_enforcement: None,
             cwd: None,
+            pty: false,
             meta_file: None,
             timeout_ms: 300_000,
             debug: false,
@@ -162,10 +168,15 @@ pub fn parse(args: &[String]) -> Result<Options, ArgError> {
             // print mode and break the Stop-hook capture.
             "-p" | "--print" => {}
             "--settings" => return Err(ArgError::SettingsRejected),
-            "-H" | "--harness" => {
+            // `--agent` is the user-facing name; `-H`/`--harness` is kept as an
+            // alias for the internal noun (see `crate::harness`).
+            "-A" | "--agent" | "-H" | "--harness" => {
                 opts.harness = Harness::parse(value(inline, args, &mut i, flag)?);
             }
             "--dangerously-skip-permissions" => opts.skip_permissions = true,
+            // Undocumented: drive the interactive TUI under a PTY instead of the
+            // harness's native non-interactive mode.
+            "--pty" => opts.pty = true,
             "--debug" | "-d" => opts.debug = true,
             "--output-format" => {
                 opts.output_format = parse_output_format(value(inline, args, &mut i, flag)?)?;
@@ -437,6 +448,24 @@ mod tests {
         assert_eq!(o.prompt, "hi");
 
         let o = parse(&v(&["-H", "gemini", "hi"])).unwrap();
+        assert_eq!(o.harness, Harness::Gemini);
+    }
+
+    #[test]
+    fn pty_flag_defaults_off_and_sets() {
+        assert!(!parse(&v(&["hi"])).unwrap().pty);
+        assert!(parse(&v(&["--pty", "hi"])).unwrap().pty);
+    }
+
+    #[test]
+    fn agent_flag_aliases_harness() {
+        let o = parse(&v(&["--agent", "codex", "hi"])).unwrap();
+        assert_eq!(o.harness, Harness::Codex);
+
+        let o = parse(&v(&["-A", "opencode", "hi"])).unwrap();
+        assert_eq!(o.harness, Harness::Opencode);
+
+        let o = parse(&v(&["--agent=gemini", "hi"])).unwrap();
         assert_eq!(o.harness, Harness::Gemini);
     }
 

@@ -6,7 +6,7 @@
 //! that actually ran. That key is `model_resolved`: the launcher's truth, read
 //! straight from claude's own output. (The PTY drive, [`super::claude_pty`], is
 //! the fallback for environments where `claude -p` is unavailable; select it
-//! with `--harness claude-pty`.)
+//! with the undocumented `--pty` flag.)
 
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};

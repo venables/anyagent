@@ -6,8 +6,8 @@
 //! run metadata (`--meta-file`) reports the truth about what model ran and what
 //! was actually enforced -- the two things every harness is otherwise vague
 //! about. Commands: `run` (default; bare prompt is sugar), `list`,
-//! `capabilities`. Adapters live in `src/adapters/` (claude via PTY + Stop
-//! hook; codex via `codex exec`).
+//! `capabilities`. Adapters live in `src/adapters/` (claude via `claude -p`, or
+//! the undocumented `--pty` drive with a Stop hook; codex via `codex exec`).
 
 mod adapters;
 mod args;
@@ -97,7 +97,7 @@ fn run(mut opts: Options) -> ExitCode {
     // Resolve the adapter that drives the selected harness. Reserved
     // harness names (codex, gemini, ...) have no adapter yet, so they fail
     // fast rather than silently behaving like claude.
-    let adapter = match adapters::for_harness(&opts.harness) {
+    let adapter = match adapters::for_harness(&opts.harness, opts.pty) {
         Some(a) => a,
         None => {
             eprintln!(

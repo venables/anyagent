@@ -1,26 +1,6 @@
 # anyagent
 
-> **Use at your own risk, educational purposes.** This drives interactive agent
-> CLIs in a way they aren't designed for. Prefer a supported print mode (e.g.
-> `claude -p`) when it works for you; reach for this only when it doesn't.
-
-One non-interactive interface in front of any coding agent. Today it wraps
-`claude`; the goal is a single, uniform pipe over other agents (codex, …) as
-they're added.
-
-For the `claude` backend it's a drop-in replacement for `claude -p`: it runs the
-interactive `claude` TUI inside a real PTY, submits your prompt, and captures the
-final assistant message via a `Stop` hook. Output on stdout matches `claude -p`
-for the same prompt.
-
-This is a Rust reimplementation of the Zig project
-[smithersai/claude-p](https://github.com/smithersai/claude-p), with one core
-simplification: **the prompt is passed as a positional argument** (`claude
-"prompt"` auto-submits in interactive mode), so there is no keystroke-typing,
-no "wait for the UI to settle" heuristic, and no Enter-debounce. The only
-thing written back to the PTY is the terminal-probe responses Ink needs at
-startup, plus a single Enter to dismiss the workspace-trust dialog if it
-appears.
+One non-interactive interface in front of any coding agent.
 
 ## Use
 
@@ -63,20 +43,23 @@ output-modes: text, json, stream-json
 
 ## Harnesses
 
-`-H` / `--harness <name|path>` selects which agent CLI to drive. Implemented today:
+`-A` / `--agent <name|path>` (alias `-H` / `--harness`) selects which agent CLI
+to drive. Implemented today:
 
 - **`claude`** (default) — `claude -p` print mode, a plain subprocess.
   Authoritative metadata: model, usage, and cost come straight from claude's
   own JSON envelope.
-- **`claude-pty`** — the same `claude`, driven through the interactive TUI under
-  a PTY + Stop hook. A fallback for environments where `claude -p` is
-  unavailable; it can't expose model/usage (see Caveats), so prefer `claude`.
 - **`codex`** — the natively non-interactive `codex exec`, a plain subprocess.
 
 `opencode`, `gemini`, and `pi` are recognised and reserved (selecting one fails
 fast until it's wired up). A value that isn't a known name is treated as a path
 to a **claude-compatible** binary and driven via `claude -p` — handy for a fork
 or a wrapper shim. The default is `claude`.
+
+Passing **`--pty`** drives the agent's interactive TUI under a PTY instead of
+its native non-interactive mode — a fallback for environments where the latter
+(e.g. `claude -p`) is unavailable. It can't expose model/usage (see Caveats), so
+prefer the native drive.
 
 ## How it works
 
@@ -85,8 +68,8 @@ and parses the result envelope (answer, usage, cost, and the `modelUsage` key
 that gives the authoritative model). codex similarly runs `codex exec --json`.
 Neither needs a PTY.
 
-The **`claude-pty`** fallback is the original mechanism — driving the
-interactive TUI under a PTY, for environments where `claude -p` doesn't work:
+The **`--pty`** fallback is the original mechanism — driving the interactive TUI
+under a PTY, for environments where `claude -p` doesn't work:
 
 1. Spawns `claude "<prompt>" --settings '<inline-json>'` on a real PTY
    (`openpty`/`forkpty` via `portable-pty`). The prompt is a positional arg,
@@ -105,7 +88,8 @@ interactive TUI under a PTY, for environments where `claude -p` doesn't work:
 ## Flags
 
 ```
---harness <name|path> | -H                claude (default) | codex | … | /path
+--agent <name|path> | -A                  claude (default) | codex | … | /path
+                                          (alias: --harness | -H)
 --output-format <text|json|stream-json>   default: text
 --model <name>
 --dangerously-skip-permissions
@@ -115,7 +99,9 @@ interactive TUI under a PTY, for environments where `claude -p` doesn't work:
 --cwd <path>                               working directory for the child
 --meta-file <path>                         write the run-metadata envelope here
 --timeout <seconds>                        wrapper wall-time cap (default 300)
---cols <n> / --rows <n>                    PTY size (default 120x40)
+--pty                                      drive the interactive TUI under a PTY
+                                           (when native non-interactive mode is unavailable)
+--cols <n> / --rows <n>                    PTY size (with --pty; default 120x40)
 --debug | -d                               wrapper debug traces on stderr
 --                                         end-of-options; rest is the prompt
 ```
@@ -171,7 +157,7 @@ read-only / workspace-write).
 
   ```json
   {
-    "harness": "claude", "harness_version": null,
+    "harness": "claude", "drive": "print", "harness_version": null,
     "model_requested": "opus", "model_resolved": "claude-opus-4-8",
     "duration_ms": 84213, "exit_status": "ok",
     "session_id": "…", "num_turns": 1, "total_cost_usd": 0.04,
@@ -181,6 +167,9 @@ read-only / workspace-write).
 
   `model_resolved` is read from the transcript (the launcher's truth), not the
   agent's self-report; it is `"unknown"` when the harness never exposed it.
+  `drive` is `"print"` for the native non-interactive mode or `"pty"` for the
+  `--pty` fallback — so a `"pty"` run's `unknown`/0 model+usage reads as a mode
+  limitation, not missing data.
 
 ## Exit codes
 
@@ -201,10 +190,10 @@ Exit codes are a stable API orchestrators can branch on.
 
 - **macOS / Linux only** (no Windows; needs a Unix PTY).
 - **Requires `claude` on `$PATH`** (or set `ANYAGENT_CLAUDE_BIN`, below).
-- **`claude-pty` can't report model/usage.** claude writes its transcript only
+- **`--pty` can't report model/usage.** claude writes its transcript only
   in print mode or on a clean TUI exit — not while the PTY session is alive, and
-  the Stop payload omits both — so `claude-pty` honestly reports
-  `model_resolved: "unknown"` and usage `0`. Use the default `claude` harness
+  the Stop payload omits both — so a `--pty` run honestly reports
+  `model_resolved: "unknown"` and usage `0`. Use the default (native) drive
   for authoritative metadata.
 - **Per-message streaming, not per-token.** `stream-json` emits transcript
   lines as `claude` flushes them, then a trailing `result` envelope.
